@@ -10,8 +10,11 @@ import (
 	"mime"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/BoomerangMessaging/notiongo/cache"
 )
 
 // Represents the parent object (in this case, a page)
@@ -91,6 +94,7 @@ type TableCell struct {
 	Annotations Annotations `json:"annotations"`
 	PlainText   string      `json:"plain_text"`
 	Href        string      `json:"href,omitempty"`
+	Mention     *Mention    `json:"mention,omitempty"`
 }
 type NumberedListItem struct {
 	RichText []RichText `json:"rich_text"`
@@ -216,6 +220,7 @@ type NotionQueryResponse struct {
 var conf struct {
 	AssetsDir      string
 	OutputDir      string
+	APIToken       string
 	DocsRoot       string
 	slugRegistered []string
 }
@@ -231,8 +236,17 @@ func stringExists(slice []string, str string) bool {
 
 // Fetch children blocks of a block (pages, databases, etc.)
 func fetchChildren(token string, blockID string, cursor string) (NotionBlockChildrenResponse, error) {
-	client := &http.Client{}
+
 	url := fmt.Sprintf("https://api.notion.com/v1/blocks/%s/children?page_size=100", blockID)
+
+	cache := cache.NewCache()
+	// Try to get the response from the cache first
+	if cachedResponse, found := cache.Get(url); found {
+		fmt.Println("Cache hit:", cachedResponse)
+		return cachedResponse.(NotionBlockChildrenResponse), nil
+	}
+
+	client := &http.Client{}
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
@@ -268,14 +282,24 @@ func fetchChildren(token string, blockID string, cursor string) (NotionBlockChil
 		return NotionBlockChildrenResponse{}, err
 	}
 
+	// Cache the response with a 5-second TTL
+	cache.Set(url, data, 600*time.Second)
+
 	return data, nil
 }
 
 // Fetch pages from a database
 func fetchPagesFromDatabase(token string, databaseID string, cursor string) (NotionQueryResponse, error) {
-	client := &http.Client{}
 	url := fmt.Sprintf("https://api.notion.com/v1/databases/%s/query", databaseID)
 
+	cache := cache.NewCache()
+	// Try to get the response from the cache first
+	if cachedResponse, found := cache.Get(url); found {
+		fmt.Println("Cache hit:", cachedResponse)
+		return cachedResponse.(NotionQueryResponse), nil
+	}
+
+	client := &http.Client{}
 	req, err := http.NewRequest("POST", url, nil)
 	if err != nil {
 		return NotionQueryResponse{}, err
@@ -311,14 +335,44 @@ func fetchPagesFromDatabase(token string, databaseID string, cursor string) (Not
 		return NotionQueryResponse{}, err
 	}
 
+	// Cache the response with a 5-second TTL
+	cache.Set(url, data, 600*time.Second)
+
 	return data, nil
+}
+
+// Check if either the directory or file exists
+func namedDirOrFileExists(rootDir, name string) (bool, error) {
+	// Construct paths for the directory and the file
+	dirPath := filepath.Join(rootDir, name)        // /root/page1234
+	filePath := filepath.Join(rootDir, name+".md") // /root/page1234.md
+
+	// Check if the directory exists
+	if info, err := os.Stat(dirPath); err == nil && info.IsDir() {
+		return true, nil // Directory exists
+	}
+
+	// Check if the file exists
+	if info, err := os.Stat(filePath); err == nil && !info.IsDir() {
+		return true, nil // File exists
+	}
+
+	// Neither directory nor file exists
+	return false, nil
 }
 
 // Fetch content of a page by retrieving its blocks
 func fetchPage(token string, pageID string) (*NotionPage, error) {
-	client := &http.Client{}
 	url := fmt.Sprintf("https://api.notion.com/v1/pages/%s", pageID)
 
+	cache := cache.NewCache()
+	// Try to get the response from the cache first
+	if cachedResponse, found := cache.Get(url); found {
+		fmt.Println("Cache hit:", cachedResponse)
+		return cachedResponse.(*NotionPage), nil
+	}
+
+	client := &http.Client{}
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, err
@@ -349,14 +403,24 @@ func fetchPage(token string, pageID string) (*NotionPage, error) {
 		return nil, err
 	}
 
+	// Cache the response with a 5-second TTL
+	cache.Set(url, response, 600*time.Second)
+
 	return &response, nil
 }
 
 // Fetch content of a page by retrieving its blocks
 func fetchPageContent(token string, pageID string) ([]NotionBlock, error) {
-	client := &http.Client{}
 	url := fmt.Sprintf("https://api.notion.com/v1/blocks/%s/children", pageID)
 
+	cache := cache.NewCache()
+	// Try to get the response from the cache first
+	if cachedResponse, found := cache.Get(url); found {
+		fmt.Println("Cache hit:", cachedResponse)
+		return cachedResponse.([]NotionBlock), nil
+	}
+
+	client := &http.Client{}
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, err
@@ -386,6 +450,9 @@ func fetchPageContent(token string, pageID string) ([]NotionBlock, error) {
 	if err := json.Unmarshal(body, &response); err != nil {
 		return nil, err
 	}
+
+	// Cache the response with a 5-second TTL
+	cache.Set(url, response.Results, 600*time.Second)
 
 	return response.Results, nil
 }
@@ -621,6 +688,7 @@ func blocksToMarkdown(token string, blocks []NotionBlock, isChildren bool) strin
 
 				markdownBuilder.WriteString(fmt.Sprintf("[%s](%s)<br/>", title, slug))
 			}
+		case "unsupported":
 		default:
 			markdownBuilder.WriteString(fmt.Sprintf("[Unsupported block type: %s]  \n", block.Type))
 		}
@@ -695,6 +763,20 @@ func renderTable(table *Table, rows []TableRow) string {
 func renderTableCell(cell []TableCell) string {
 	var cellContent string
 	for _, rt := range cell {
+
+		if rt.Type == "mention" {
+			page, err := fetchPage(conf.APIToken, rt.Mention.Page.ID)
+			if err != nil {
+				log.Printf("[ERROR] while fetching mention_to_page %v", err)
+				continue
+			} else {
+				title, slug, _ := extractPageProperties(*page)
+				if len(slug) > 0 && slug[0:1] == "/" {
+					slug = conf.DocsRoot + slug
+				}
+				rt.PlainText = fmt.Sprintf("[%s](%s)", title, slug)
+			}
+		}
 
 		rt.PlainText = strings.ReplaceAll(rt.PlainText, "·", "-")
 		rt.PlainText = strings.ReplaceAll(rt.PlainText, "\n", "<br />")
@@ -973,6 +1055,7 @@ func main() {
 
 	conf.DocsRoot = *DocsRoot
 	conf.AssetsDir = *AssetsRoot
+	conf.APIToken = *token
 
 	processBlocks(*token, *rootID, *outputDir)
 
