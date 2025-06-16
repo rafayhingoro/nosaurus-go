@@ -13,8 +13,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
-	"github.com/BoomerangMessaging/notiongo/cache"
 )
 
 // Represents the parent object (in this case, a page)
@@ -223,6 +221,7 @@ var conf struct {
 	APIToken       string
 	DocsRoot       string
 	slugRegistered []string
+	DebugMode      bool
 }
 
 func stringExists(slice []string, str string) bool {
@@ -238,13 +237,6 @@ func stringExists(slice []string, str string) bool {
 func fetchChildren(token string, blockID string, cursor string) (NotionBlockChildrenResponse, error) {
 
 	url := fmt.Sprintf("https://api.notion.com/v1/blocks/%s/children?page_size=100", blockID)
-
-	cache := cache.NewCache()
-	// Try to get the response from the cache first
-	if cachedResponse, found := cache.Get(url); found {
-		fmt.Println("Cache hit:", cachedResponse)
-		return cachedResponse.(NotionBlockChildrenResponse), nil
-	}
 
 	client := &http.Client{}
 
@@ -277,13 +269,29 @@ func fetchChildren(token string, blockID string, cursor string) (NotionBlockChil
 		return fetchChildren(token, blockID, cursor)
 	}
 
+	// Debug: Save raw response to file (only if debug mode is enabled)
+	if conf.DebugMode {
+		debugDir := "debug_responses"
+		if _, err := os.Stat(debugDir); os.IsNotExist(err) {
+			os.MkdirAll(debugDir, os.ModePerm)
+		}
+		respFilename := fmt.Sprintf("%s/children_%s_%s.json", debugDir, blockID, cursor)
+		if cursor == "" {
+			respFilename = fmt.Sprintf("%s/children_%s.json", debugDir, blockID)
+		}
+		os.WriteFile(respFilename, body, 0644)
+		log.Printf("[DEBUG] Saved fetchChildren response to %s (Status: %d, Size: %d bytes)", respFilename, resp.StatusCode, len(body))
+	}
+
 	var data NotionBlockChildrenResponse
 	if err := json.Unmarshal(body, &data); err != nil {
 		return NotionBlockChildrenResponse{}, err
 	}
 
-	// Cache the response with a 5-second TTL
-	cache.Set(url, data, 600*time.Second)
+	// Log pagination info (only if debug mode is enabled)
+	if conf.DebugMode {
+		log.Printf("[DEBUG] fetchChildren for block %s: HasMore=%t, NextCursor=%s, Results=%d", blockID, data.HasMore, data.NextCursor, len(data.Results))
+	}
 
 	return data, nil
 }
@@ -291,13 +299,6 @@ func fetchChildren(token string, blockID string, cursor string) (NotionBlockChil
 // Fetch pages from a database
 func fetchPagesFromDatabase(token string, databaseID string, cursor string) (NotionQueryResponse, error) {
 	url := fmt.Sprintf("https://api.notion.com/v1/databases/%s/query", databaseID)
-
-	cache := cache.NewCache()
-	// Try to get the response from the cache first
-	if cachedResponse, found := cache.Get(url); found {
-		fmt.Println("Cache hit:", cachedResponse)
-		return cachedResponse.(NotionQueryResponse), nil
-	}
 
 	client := &http.Client{}
 	req, err := http.NewRequest("POST", url, nil)
@@ -335,8 +336,22 @@ func fetchPagesFromDatabase(token string, databaseID string, cursor string) (Not
 		return NotionQueryResponse{}, err
 	}
 
-	// Cache the response with a 5-second TTL
-	cache.Set(url, data, 600*time.Second)
+	// Debug: Save raw response to file (only if debug mode is enabled)
+	if conf.DebugMode {
+		debugDir := "debug_responses"
+		if _, err := os.Stat(debugDir); os.IsNotExist(err) {
+			os.MkdirAll(debugDir, os.ModePerm)
+		}
+		respFilename := fmt.Sprintf("%s/database_%s_%s.json", debugDir, databaseID, cursor)
+		if cursor == "" {
+			respFilename = fmt.Sprintf("%s/database_%s.json", debugDir, databaseID)
+		}
+		os.WriteFile(respFilename, body, 0644)
+		log.Printf("[DEBUG] Saved database query response to %s (Status: %d, Size: %d bytes)", respFilename, resp.StatusCode, len(body))
+
+		// Log pagination info (only if debug mode is enabled)
+		log.Printf("[DEBUG] fetchPagesFromDatabase for database %s: HasMore=%t, NextCursor=%s, Results=%d", databaseID, data.HasMore, data.NextCursor, len(data.Results))
+	}
 
 	return data, nil
 }
@@ -364,13 +379,6 @@ func namedDirOrFileExists(rootDir, name string) (bool, error) {
 // Fetch content of a page by retrieving its blocks
 func fetchPage(token string, pageID string) (*NotionPage, error) {
 	url := fmt.Sprintf("https://api.notion.com/v1/pages/%s", pageID)
-
-	cache := cache.NewCache()
-	// Try to get the response from the cache first
-	if cachedResponse, found := cache.Get(url); found {
-		fmt.Println("Cache hit:", cachedResponse)
-		return cachedResponse.(*NotionPage), nil
-	}
 
 	client := &http.Client{}
 	req, err := http.NewRequest("GET", url, nil)
@@ -403,58 +411,57 @@ func fetchPage(token string, pageID string) (*NotionPage, error) {
 		return nil, err
 	}
 
-	// Cache the response with a 5-second TTL
-	cache.Set(url, response, 600*time.Second)
+	// Debug: Save raw response to file (only if debug mode is enabled)
+	if conf.DebugMode {
+		debugDir := "debug_responses"
+		if _, err := os.Stat(debugDir); os.IsNotExist(err) {
+			os.MkdirAll(debugDir, os.ModePerm)
+		}
+		respFilename := fmt.Sprintf("%s/page_%s.json", debugDir, pageID)
+		os.WriteFile(respFilename, body, 0644)
+		log.Printf("[DEBUG] Saved page response to %s", respFilename)
+	}
 
 	return &response, nil
 }
 
 // Fetch content of a page by retrieving its blocks
 func fetchPageContent(token string, pageID string) ([]NotionBlock, error) {
-	url := fmt.Sprintf("https://api.notion.com/v1/blocks/%s/children", pageID)
+	var allBlocks []NotionBlock
+	var nextCursor string
+	hasMore := true
+	pageCount := 0
 
-	cache := cache.NewCache()
-	// Try to get the response from the cache first
-	if cachedResponse, found := cache.Get(url); found {
-		fmt.Println("Cache hit:", cachedResponse)
-		return cachedResponse.([]NotionBlock), nil
+	if conf.DebugMode {
+		log.Printf("[DEBUG] Starting fetchPageContent for pageID: %s", pageID)
 	}
 
-	client := &http.Client{}
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, err
+	for hasMore {
+		pageCount++
+		if conf.DebugMode {
+			log.Printf("[DEBUG] fetchPageContent page %d - fetching blocks for page %s with cursor: %s", pageCount, pageID, nextCursor)
+		}
+
+		response, err := fetchChildren(token, pageID, nextCursor)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch page content: %v", err)
+		}
+
+		if conf.DebugMode {
+			log.Printf("[DEBUG] fetchPageContent page %d - received %d blocks, hasMore: %t, nextCursor: %s", pageCount, len(response.Results), response.HasMore, response.NextCursor)
+		}
+
+		allBlocks = append(allBlocks, response.Results...)
+
+		hasMore = response.HasMore
+		nextCursor = response.NextCursor
+		time.Sleep(500 * time.Millisecond) // Add delay to respect rate limits
 	}
 
-	req.Header.Add("Authorization", "Bearer "+token)
-	req.Header.Add("Notion-Version", "2022-06-28")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
+	if conf.DebugMode {
+		log.Printf("[DEBUG] fetchPageContent completed for page %s: total blocks=%d", pageID, len(allBlocks))
 	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	if resp.StatusCode == 429 {
-		fmt.Println("Rate limited. Waiting for retry...")
-		time.Sleep(3 * time.Second)
-		return fetchPageContent(token, pageID)
-	}
-
-	var response NotionBlockChildrenResponse
-	if err := json.Unmarshal(body, &response); err != nil {
-		return nil, err
-	}
-
-	// Cache the response with a 5-second TTL
-	cache.Set(url, response.Results, 600*time.Second)
-
-	return response.Results, nil
+	return allBlocks, nil
 }
 
 func randomString(length int) string {
@@ -714,10 +721,22 @@ func fetchTableContent(token string, tableBlockID string) ([]TableRow, error) {
 	var nextCursor string
 	hasMore := true
 
+	if conf.DebugMode {
+		log.Printf("[DEBUG] Starting fetchTableContent for table block: %s", tableBlockID)
+	}
+
 	for hasMore {
+		if conf.DebugMode {
+			log.Printf("[DEBUG] fetchTableContent - fetching children for table %s with cursor: %s", tableBlockID, nextCursor)
+		}
+
 		response, err := fetchChildren(token, tableBlockID, nextCursor)
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch table content: %v", err)
+		}
+
+		if conf.DebugMode {
+			log.Printf("[DEBUG] fetchTableContent - received %d results, hasMore: %t", len(response.Results), response.HasMore)
 		}
 
 		for _, result := range response.Results {
@@ -731,6 +750,9 @@ func fetchTableContent(token string, tableBlockID string) ([]TableRow, error) {
 		time.Sleep(1 * time.Second) // Add delay to respect rate limits
 	}
 
+	if conf.DebugMode {
+		log.Printf("[DEBUG] fetchTableContent completed for table %s: total rows=%d", tableBlockID, len(allRows))
+	}
 	return allRows, nil
 }
 
@@ -965,14 +987,31 @@ func writeMarkdown(outputDir string, token string, page NotionPage, position int
 func processBlocks(token string, blockID string, outputDir string) {
 	var nextCursor string
 	hasMore := true
+	pageCount := 0
+
+	if conf.DebugMode {
+		log.Printf("[DEBUG] Starting processBlocks for blockID: %s", blockID)
+	}
 
 	for hasMore {
+		pageCount++
+		if conf.DebugMode {
+			log.Printf("[DEBUG] processBlocks page %d - fetching children for block %s with cursor: %s", pageCount, blockID, nextCursor)
+		}
+
 		response, err := fetchChildren(token, blockID, nextCursor)
 		if err != nil {
 			log.Fatalf("Failed to fetch children: %v", err)
 		}
 
+		if conf.DebugMode {
+			log.Printf("[DEBUG] processBlocks page %d - received %d results, hasMore: %t, nextCursor: %s", pageCount, len(response.Results), response.HasMore, response.NextCursor)
+		}
+
 		for index, block := range response.Results {
+			if conf.DebugMode {
+				log.Printf("[DEBUG] Processing block %d/%d: type=%s, id=%s", index+1, len(response.Results), block.Type, block.ID)
+			}
 
 			switch block.Type {
 			case "link_to_page":
@@ -992,18 +1031,7 @@ func processBlocks(token string, blockID string, outputDir string) {
 				}
 			}
 
-			// if block.Type == "child_page" {
-			// 	fmt.Printf("Processing child page: %s\n", block.ID)
-			// 	// Write the markdown for the child page
-			// 	_, err := pageToMarkdown(token, NotionPage{ID: block.ID}) // Simulate a page
-			// 	if err == nil {
-			// 		writeMarkdown(outputDir, token, NotionPage{ID: block.ID}) // Write to file
-			// 	}
-			// } else if block.Type == "child_database" {
-			// 	fmt.Printf("Processing child database: %s\n", block.ID)
-			// 	// Fetch and process databases for pages
-			// 	processDatabases(token, block.ID, outputDir)
-			// }
+			// ...existing code for other block types...
 		}
 
 		hasMore = response.HasMore
@@ -1016,14 +1044,31 @@ func processBlocks(token string, blockID string, outputDir string) {
 func processDatabases(token string, databaseID string, outputDir string) {
 	var nextCursor string
 	hasMore := true
+	pageCount := 0
+
+	if conf.DebugMode {
+		log.Printf("[DEBUG] Starting processDatabases for databaseID: %s", databaseID)
+	}
 
 	for hasMore {
+		pageCount++
+		if conf.DebugMode {
+			log.Printf("[DEBUG] processDatabases page %d - fetching pages from database %s with cursor: %s", pageCount, databaseID, nextCursor)
+		}
+
 		response, err := fetchPagesFromDatabase(token, databaseID, nextCursor)
 		if err != nil {
 			log.Fatalf("Failed to fetch pages from database: %v", err)
 		}
 
+		if conf.DebugMode {
+			log.Printf("[DEBUG] processDatabases page %d - received %d pages, hasMore: %t, nextCursor: %s", pageCount, len(response.Results), response.HasMore, response.NextCursor)
+		}
+
 		for index, page := range response.Results {
+			if conf.DebugMode {
+				log.Printf("[DEBUG] Writing markdown for page %d/%d: %s", index+1, len(response.Results), page.ID)
+			}
 			fmt.Printf("Writing markdown for page: %s\n", page.ID)
 			if err := writeMarkdown(outputDir, token, page, index); err != nil {
 				log.Printf("Failed to write markdown for page %s: %v", page.ID, err)
@@ -1037,16 +1082,21 @@ func processDatabases(token string, databaseID string, outputDir string) {
 }
 
 func main() {
-	token := flag.String("t", "", "Notion API token")
-	rootID := flag.String("r", "", "Root block ID (page or database)")
+	// Get environment variables as defaults
+	envToken := os.Getenv("NOTION_API_TOKEN")
+	envRootID := os.Getenv("NOTION_ROOT_ID")
+
+	token := flag.String("t", envToken, "Notion API token (or set NOTION_API_TOKEN env var)")
+	rootID := flag.String("r", envRootID, "Root block ID (page or database) (or set NOTION_ROOT_ID env var)")
 	outputDir := flag.String("o", "./output", "Output directory for markdown files")
 	DocsRoot := flag.String("docs", "/docs", "root docs directory")
 	AssetsRoot := flag.String("assets", "./static", "root docs directory")
+	debugMode := flag.Bool("debug", false, "Enable debug mode to save API responses to debug_responses/ folder")
 
 	flag.Parse()
 
 	if *token == "" || *rootID == "" {
-		log.Fatal("Notion API token and root ID are required")
+		log.Fatal("Notion API token and root ID are required. Set NOTION_API_TOKEN and NOTION_ROOT_ID environment variables or use -t and -r flags.")
 	}
 
 	if _, err := os.Stat(*outputDir); os.IsNotExist(err) {
@@ -1056,6 +1106,7 @@ func main() {
 	conf.DocsRoot = *DocsRoot
 	conf.AssetsDir = *AssetsRoot
 	conf.APIToken = *token
+	conf.DebugMode = *debugMode
 
 	processBlocks(*token, *rootID, *outputDir)
 
