@@ -284,7 +284,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## 🙏 Acknowledgments
 
 - Built with ❤️ using Go
-- Inspired by the need to bridge Notion and Docusaurus
+- Inspired by [docu-notion](https://github.com/sillsdev/docu-notion)
+- Enhanced with full pagination support and Go performance
 - Thanks to the Notion API team for comprehensive documentation
 
 ---
