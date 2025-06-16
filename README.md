@@ -3,6 +3,7 @@
 [![Go](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat&logo=go)](https://golang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)]()
+[![GitHub Sponsors](https://img.shields.io/github/sponsors/rafayhingoro?style=flat&logo=githubsponsors&logoColor=white&color=ea4aaa)](https://github.com/sponsors/rafayhingoro)
 
 **Transform your Notion workspace into beautiful Docusaurus documentation with full pagination support and rich content preservation.**
 
