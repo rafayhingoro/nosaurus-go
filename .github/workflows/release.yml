@@ -1,0 +1,88 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'  # Triggers on version tags like v1.0.0
+
+jobs:
+  build:
+    name: Build Binaries
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [windows, linux, darwin]
+        arch: [amd64, arm64]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: 1.21
+
+      - name: Set file extension
+        run: |
+          if [ "${{ matrix.os }}" == "windows" ]; then
+            EXT=".exe"
+          else
+            EXT=""
+          fi
+          echo "EXT=$EXT" >> $GITHUB_ENV
+
+      - name: Build binary
+        run: |
+          echo "Building for ${{ matrix.os }}/${{ matrix.arch }}"
+          mkdir -p dist
+          GOOS=${{ matrix.os }} GOARCH=${{ matrix.arch }} go build -o dist/nosaurus$EXT ./cmd/nosaurus
+
+      - name: Zip binary
+        run: |
+          cd dist
+          ZIP_NAME="nosaurus-${{ matrix.os }}-${{ matrix.arch }}.zip"
+          zip -r $ZIP_NAME nosaurus$EXT
+          cd ..
+
+      - name: Generate checksum
+        run: |
+          cd dist
+          SHA_FILE="nosaurus-${{ matrix.os }}-${{ matrix.arch }}.sha256"
+          shasum -a 256 nosaurus-${{ matrix.os }}-${{ matrix.arch }}.zip > $SHA_FILE
+          cd ..
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: nosaurus-${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            dist/nosaurus-${{ matrix.os }}-${{ matrix.arch }}.zip
+            dist/nosaurus-${{ matrix.os }}-${{ matrix.arch }}.sha256
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v3
+        with:
+          path: dist
+
+      - name: Create GitHub Release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          files: dist/*.zip
+          
+      - name: Upload checksums
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ github.ref_name }}
+          files: dist/*.sha256
