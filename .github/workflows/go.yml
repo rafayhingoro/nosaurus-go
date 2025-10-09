@@ -1,25 +1,74 @@
-# This workflow will build a golang project
-# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-go
-
-name: Go
+name: Release
 
 on:
   push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
+    tags:
+      - 'v*'  # Only runs on version tags like v1.0.0
 
 jobs:
-
   build:
+    name: Build Binaries
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [windows, linux, darwin]
+        arch: [amd64, arm64]
+
     steps:
-    - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    - name: Set up Go
-      uses: actions/setup-go@v4
-      with:
-        go-version: '1.19'
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: 1.19
 
-    - name: Build
-      run: go build -v ./...
+      - name: Set file extension
+        run: |
+          if [ "${{ matrix.os }}" == "windows" ]; then
+            EXT=".exe"
+          else
+            EXT=""
+          fi
+          echo "EXT=$EXT" >> $GITHUB_ENV
+
+      - name: Build binary
+        run: |
+          echo "Building for ${{ matrix.os }}/${{ matrix.arch }}"
+          mkdir -p dist
+          GOOS=${{ matrix.os }} GOARCH=${{ matrix.arch }} go build -o dist/nosaurus$EXT ./cmd/nosaurus
+
+      - name: Zip binary
+        run: |
+          ZIP_NAME="nosaurus-${{ matrix.os }}-${{ matrix.arch }}.zip"
+          cd dist
+          zip -r $ZIP_NAME nosaurus$EXT
+          cd ..
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: nosaurus-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/nosaurus-${{ matrix.os }}-${{ matrix.arch }}.zip
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v3
+        with:
+          path: dist
+
+      - name: Create Release
+        id: create_release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          files: dist/*.zip
