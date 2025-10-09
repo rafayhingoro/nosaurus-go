@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'  # Triggers on version tags like v1.0.0
+      - 'v*'
 
 jobs:
   build:
@@ -18,14 +18,15 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Go
-        uses: actions/setup-go@v4
+      - name: Setup Go
+        uses: actions/setup-go@v5
         with:
-          go-version: 1.21
+          go-version: 1.19
+          check-latest: false   # don’t override to a newer Go automatically
 
-      - name: Set file extension
+      - name: Determine file extension
         run: |
-          if [ "${{ matrix.os }}" == "windows" ]; then
+          if [ "${{ matrix.os }}" = "windows" ]; then
             EXT=".exe"
           else
             EXT=""
@@ -34,26 +35,26 @@ jobs:
 
       - name: Build binary
         run: |
-          echo "Building for ${{ matrix.os }}/${{ matrix.arch }}"
+          echo "Building for ${{ matrix.os }} / ${{ matrix.arch }}"
           mkdir -p dist
           GOOS=${{ matrix.os }} GOARCH=${{ matrix.arch }} go build -o dist/nosaurus$EXT ./cmd/nosaurus
 
       - name: Zip binary
         run: |
           cd dist
-          ZIP_NAME="nosaurus-${{ matrix.os }}-${{ matrix.arch }}.zip"
-          zip -r $ZIP_NAME nosaurus$EXT
+          ZIP="nosaurus-${{ matrix.os }}-${{ matrix.arch }}.zip"
+          zip -r $ZIP nosaurus$EXT
           cd ..
 
       - name: Generate checksum
         run: |
           cd dist
-          SHA_FILE="nosaurus-${{ matrix.os }}-${{ matrix.arch }}.sha256"
-          shasum -a 256 nosaurus-${{ matrix.os }}-${{ matrix.arch }}.zip > $SHA_FILE
+          SHA="nosaurus-${{ matrix.os }}-${{ matrix.arch }}.sha256"
+          shasum -a 256 nosaurus-${{ matrix.os }}-${{ matrix.arch }}.zip > $SHA
           cd ..
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: nosaurus-${{ matrix.os }}-${{ matrix.arch }}
           path: |
@@ -70,7 +71,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Download build artifacts
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           path: dist
 
@@ -80,7 +81,7 @@ jobs:
           tag: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
           files: dist/*.zip
-          
+
       - name: Upload checksums
         uses: ncipollo/release-action@v1
         with:
