@@ -150,6 +150,18 @@ type Bookmark struct {
 	Caption []RichText `json:"caption"`
 }
 
+type Embed struct {
+	URL     string     `json:"url"`
+	Caption []RichText `json:"caption"`
+}
+
+type Video struct {
+	Type     string     `json:"type"`
+	File     *File      `json:"file,omitempty"`
+	External *Link      `json:"external,omitempty"`
+	Caption  []RichText `json:"caption"`
+}
+
 type NotionBlock struct {
 	Object           string            `json:"object"`
 	ID               string            `json:"id"`
@@ -181,6 +193,8 @@ type NotionBlock struct {
 	TableRows        *TableRow         `json:"table_row,omitempty"`
 	LinkToPage       *LinkToPage       `json:"link_to_page,omitempty"`
 	ChildPage        *ChildPage        `json:"child_page,omitempty"`
+	Embed            *Embed            `json:"embed,omitempty"`
+	Video            *Video            `json:"video,omitempty"`
 }
 
 type ChildPage struct {
@@ -473,6 +487,55 @@ func randomString(length int) string {
 	return string(result)
 }
 
+// extractYouTubeID extracts the video ID from a YouTube URL
+func extractYouTubeID(url string) string {
+	// Handle youtu.be short URLs
+	if strings.Contains(url, "youtu.be/") {
+		parts := strings.Split(url, "youtu.be/")
+		if len(parts) > 1 {
+			// Remove any query parameters
+			id := strings.Split(parts[1], "?")[0]
+			id = strings.Split(id, "&")[0]
+			return id
+		}
+	}
+	// Handle youtube.com URLs
+	if strings.Contains(url, "youtube.com") {
+		// Check for /watch?v= format
+		if strings.Contains(url, "v=") {
+			parts := strings.Split(url, "v=")
+			if len(parts) > 1 {
+				id := strings.Split(parts[1], "&")[0]
+				return id
+			}
+		}
+		// Check for /embed/ format
+		if strings.Contains(url, "/embed/") {
+			parts := strings.Split(url, "/embed/")
+			if len(parts) > 1 {
+				id := strings.Split(parts[1], "?")[0]
+				return id
+			}
+		}
+	}
+	return ""
+}
+
+// extractVimeoID extracts the video ID from a Vimeo URL
+func extractVimeoID(url string) string {
+	// Handle vimeo.com URLs like vimeo.com/123456789
+	if strings.Contains(url, "vimeo.com/") {
+		parts := strings.Split(url, "vimeo.com/")
+		if len(parts) > 1 {
+			// Remove any query parameters or path segments
+			id := strings.Split(parts[1], "?")[0]
+			id = strings.Split(id, "/")[0]
+			return id
+		}
+	}
+	return ""
+}
+
 func downloadImage(url string, filepath string) (string, error) {
 	// Make the HTTP request to download the image
 	resp, err := http.Get(url)
@@ -694,6 +757,50 @@ func blocksToMarkdown(token string, blocks []NotionBlock, isChildren bool) strin
 				}
 
 				markdownBuilder.WriteString(fmt.Sprintf("[%s](%s)<br/>", title, slug))
+			}
+		case "embed":
+			if block.Embed != nil {
+				caption := ""
+				for _, t := range block.Embed.Caption {
+					caption += t.PlainText
+				}
+				if caption == "" {
+					caption = "Embedded content"
+				}
+				markdownBuilder.WriteString(fmt.Sprintf(`<iframe src="%s" title="%s" frameborder="0" allowfullscreen></iframe>`, block.Embed.URL, caption) + "  \n")
+			}
+		case "video":
+			if block.Video != nil {
+				url := ""
+				if block.Video.Type == "file" && block.Video.File != nil {
+					url = block.Video.File.URL
+				} else if block.Video.Type == "external" && block.Video.External != nil {
+					url = block.Video.External.URL
+				}
+				caption := ""
+				for _, t := range block.Video.Caption {
+					caption += t.PlainText
+				}
+				// Check if it's a YouTube or Vimeo URL for embed
+				if strings.Contains(url, "youtube.com") || strings.Contains(url, "youtu.be") {
+					// Convert YouTube URL to embed format
+					videoID := extractYouTubeID(url)
+					if videoID != "" {
+						markdownBuilder.WriteString(fmt.Sprintf(`<iframe src="https://www.youtube.com/embed/%s" title="%s" frameborder="0" allowfullscreen></iframe>`, videoID, caption) + "  \n")
+					} else {
+						markdownBuilder.WriteString(fmt.Sprintf(`<video controls><source src="%s" type="video/mp4">%s</video>`, url, caption) + "  \n")
+					}
+				} else if strings.Contains(url, "vimeo.com") {
+					// Convert Vimeo URL to embed format
+					videoID := extractVimeoID(url)
+					if videoID != "" {
+						markdownBuilder.WriteString(fmt.Sprintf(`<iframe src="https://player.vimeo.com/video/%s" title="%s" frameborder="0" allowfullscreen></iframe>`, videoID, caption) + "  \n")
+					} else {
+						markdownBuilder.WriteString(fmt.Sprintf(`<video controls><source src="%s" type="video/mp4">%s</video>`, url, caption) + "  \n")
+					}
+				} else {
+					markdownBuilder.WriteString(fmt.Sprintf(`<video controls><source src="%s" type="video/mp4">%s</video>`, url, caption) + "  \n")
+				}
 			}
 		case "unsupported":
 		default:
