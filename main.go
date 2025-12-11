@@ -162,6 +162,55 @@ type Video struct {
 	Caption  []RichText `json:"caption"`
 }
 
+type Audio struct {
+	Type     string     `json:"type"`
+	File     *File      `json:"file,omitempty"`
+	External *Link      `json:"external,omitempty"`
+	Caption  []RichText `json:"caption"`
+}
+
+type PDF struct {
+	Type     string     `json:"type"`
+	File     *File      `json:"file,omitempty"`
+	External *Link      `json:"external,omitempty"`
+	Caption  []RichText `json:"caption"`
+}
+
+type Equation struct {
+	Expression string `json:"expression"`
+}
+
+type LinkPreview struct {
+	URL string `json:"url"`
+}
+
+type SyncedBlock struct {
+	SyncedFrom *SyncedFrom `json:"synced_from"`
+}
+
+type SyncedFrom struct {
+	BlockID string `json:"block_id"`
+}
+
+type Toggle struct {
+	RichText []RichText `json:"rich_text"`
+	Color    string     `json:"color"`
+}
+
+type ChildDatabase struct {
+	Title string `json:"title"`
+}
+
+type TableOfContents struct {
+	Color string `json:"color"`
+}
+
+type Breadcrumb struct{}
+
+type ColumnList struct{}
+
+type Column struct{}
+
 type NotionBlock struct {
 	Object           string            `json:"object"`
 	ID               string            `json:"id"`
@@ -195,6 +244,17 @@ type NotionBlock struct {
 	ChildPage        *ChildPage        `json:"child_page,omitempty"`
 	Embed            *Embed            `json:"embed,omitempty"`
 	Video            *Video            `json:"video,omitempty"`
+	Audio            *Audio            `json:"audio,omitempty"`
+	PDF              *PDF              `json:"pdf,omitempty"`
+	Equation         *Equation         `json:"equation,omitempty"`
+	LinkPreview      *LinkPreview      `json:"link_preview,omitempty"`
+	SyncedBlock      *SyncedBlock      `json:"synced_block,omitempty"`
+	Toggle           *Toggle           `json:"toggle,omitempty"`
+	ChildDatabase    *ChildDatabase    `json:"child_database,omitempty"`
+	TableOfContents  *TableOfContents  `json:"table_of_contents,omitempty"`
+	Breadcrumb       *Breadcrumb       `json:"breadcrumb,omitempty"`
+	ColumnList       *ColumnList       `json:"column_list,omitempty"`
+	Column           *Column           `json:"column,omitempty"`
 }
 
 type ChildPage struct {
@@ -802,7 +862,76 @@ func blocksToMarkdown(token string, blocks []NotionBlock, isChildren bool) strin
 					markdownBuilder.WriteString(fmt.Sprintf(`<video controls><source src="%s" type="video/mp4">%s</video>`, url, caption) + "  \n")
 				}
 			}
+		case "audio":
+			if block.Audio != nil {
+				url := ""
+				if block.Audio.Type == "file" && block.Audio.File != nil {
+					url = block.Audio.File.URL
+				} else if block.Audio.Type == "external" && block.Audio.External != nil {
+					url = block.Audio.External.URL
+				}
+				caption := ""
+				for _, t := range block.Audio.Caption {
+					caption += t.PlainText
+				}
+				markdownBuilder.WriteString(fmt.Sprintf(`<audio controls><source src="%s">%s</audio>`, url, caption) + "  \n")
+			}
+		case "pdf":
+			if block.PDF != nil {
+				url := ""
+				if block.PDF.Type == "file" && block.PDF.File != nil {
+					url = block.PDF.File.URL
+				} else if block.PDF.Type == "external" && block.PDF.External != nil {
+					url = block.PDF.External.URL
+				}
+				caption := ""
+				for _, t := range block.PDF.Caption {
+					caption += t.PlainText
+				}
+				if caption == "" {
+					caption = "PDF Document"
+				}
+				markdownBuilder.WriteString(fmt.Sprintf(`<embed src="%s" type="application/pdf" width="100%%" height="600px" title="%s" />`, url, caption) + "  \n")
+			}
+		case "equation":
+			if block.Equation != nil {
+				// Render as LaTeX block equation
+				markdownBuilder.WriteString(fmt.Sprintf("$$\n%s\n$$\n", block.Equation.Expression))
+			}
+		case "link_preview":
+			if block.LinkPreview != nil {
+				markdownBuilder.WriteString(fmt.Sprintf("[%s](%s)  \n", block.LinkPreview.URL, block.LinkPreview.URL))
+			}
+		case "toggle":
+			if block.Toggle != nil {
+				var toggleText string
+				for _, t := range block.Toggle.RichText {
+					toggleText += formatBlockHTML(t)
+				}
+				markdownBuilder.WriteString(fmt.Sprintf("<details>\n<summary>%s</summary>\n\n", toggleText))
+				// Children will be rendered by the HasChildren block below, close the details tag after
+			}
+		case "synced_block":
+			// Synced blocks render their children, which is handled by HasChildren
+			// The original block content comes from the synced_from reference
+		case "child_database":
+			if block.ChildDatabase != nil {
+				markdownBuilder.WriteString(fmt.Sprintf("**Database:** %s  \n", block.ChildDatabase.Title))
+			}
+		case "table_of_contents":
+			markdownBuilder.WriteString("[TOC]  \n")
+		case "breadcrumb":
+			// Breadcrumb is typically rendered by the site framework
+			markdownBuilder.WriteString("<!-- Breadcrumb -->  \n")
+		case "column_list":
+			// Column list is a container, children (columns) will be rendered via HasChildren
+			markdownBuilder.WriteString("<div class=\"column-list\">\n")
+		case "column":
+			// Column is a container, children will be rendered via HasChildren
+			markdownBuilder.WriteString("<div class=\"column\">\n")
 		case "unsupported":
+		case "child_page":
+			// Child pages are typically handled separately in page hierarchy
 		default:
 			markdownBuilder.WriteString(fmt.Sprintf("[Unsupported block type: %s]  \n", block.Type))
 		}
@@ -817,6 +946,14 @@ func blocksToMarkdown(token string, blocks []NotionBlock, isChildren bool) strin
 				markdownBuilder.WriteString(contentMarkdown)
 			}
 
+			// Close container tags for specific block types
+			if block.Type == "toggle" {
+				markdownBuilder.WriteString("</details>\n")
+			} else if block.Type == "column_list" {
+				markdownBuilder.WriteString("</div>\n")
+			} else if block.Type == "column" {
+				markdownBuilder.WriteString("</div>\n")
+			}
 		}
 	}
 
