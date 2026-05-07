@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -9,8 +10,11 @@ import (
 	"math/rand"
 	"mime"
 	"net/http"
+	"net/url"
 	"os"
+	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -596,9 +600,54 @@ func extractVimeoID(url string) string {
 	return ""
 }
 
-func downloadImage(url string, filepath string) (string, error) {
+func resolveImageExt(contentType, contentDisposition, imageURL string, sniff []byte) string {
+	mediaType := strings.TrimSpace(contentType)
+	if mediaType != "" {
+		parsedType, _, err := mime.ParseMediaType(mediaType)
+		if err == nil {
+			mediaType = parsedType
+		}
+		if mediaType != "application/octet-stream" && mediaType != "binary/octet-stream" {
+			exts, err := mime.ExtensionsByType(mediaType)
+			if err == nil && len(exts) > 0 {
+				return exts[0]
+			}
+		}
+	}
+
+	if contentDisposition != "" {
+		_, params, err := mime.ParseMediaType(contentDisposition)
+		if err == nil {
+			if filename, ok := params["filename"]; ok {
+				ext := strings.ToLower(path.Ext(filename))
+				if ext != "" {
+					return ext
+				}
+			}
+		}
+	}
+
+	if parsedURL, err := url.Parse(imageURL); err == nil {
+		ext := strings.ToLower(path.Ext(parsedURL.Path))
+		if ext != "" {
+			return ext
+		}
+	}
+
+	if len(sniff) > 0 {
+		detectedType := http.DetectContentType(sniff)
+		exts, err := mime.ExtensionsByType(detectedType)
+		if err == nil && len(exts) > 0 {
+			return exts[0]
+		}
+	}
+
+	return ".bin"
+}
+
+func downloadImage(imageURL string, outputDir string) (string, error) {
 	// Make the HTTP request to download the image
-	resp, err := http.Get(url)
+	resp, err := http.Get(imageURL)
 	if err != nil {
 		return "", err
 	}
@@ -609,19 +658,21 @@ func downloadImage(url string, filepath string) (string, error) {
 		return "", fmt.Errorf("failed to download image: status code %d", resp.StatusCode)
 	}
 
-	// Get the Content-Type header to determine the file extension
-	contentType := resp.Header.Get("Content-Type")
-	exts, err := mime.ExtensionsByType(contentType)
-	if err != nil || len(exts) == 0 {
-		return "", fmt.Errorf("failed to determine file extension for content type: %s", contentType)
-	}
+	reader := bufio.NewReader(resp.Body)
+	peek, _ := reader.Peek(512)
+	ext := resolveImageExt(
+		resp.Header.Get("Content-Type"),
+		resp.Header.Get("Content-Disposition"),
+		imageURL,
+		peek,
+	)
 
 	// Create a unique file name with random string and timestamp
 	timestamp := time.Now().UnixNano()
 	randomStr := randomString(8)
-	filename := fmt.Sprintf("%s_%d%s", randomStr, timestamp, exts[0])
+	filename := fmt.Sprintf("%s_%d%s", randomStr, timestamp, ext)
 
-	img := fmt.Sprintf("%s/%s", filepath, filename)
+	img := fmt.Sprintf("%s/%s", outputDir, filename)
 
 	// Create the file with the appropriate extension
 	out, err := os.Create(img)
@@ -631,12 +682,28 @@ func downloadImage(url string, filepath string) (string, error) {
 	defer out.Close()
 
 	// Copy the image data to the file
-	_, err = io.Copy(out, resp.Body)
+	_, err = io.Copy(out, reader)
 	if err != nil {
 		return "", err
 	}
 
 	return filename, nil
+}
+
+func escapeInlineCode(text string) string {
+	text = strings.ReplaceAll(text, "<", "&lt;")
+	text = strings.ReplaceAll(text, ">", "&gt;")
+	return text
+}
+
+var codeTagPattern = regexp.MustCompile(`(?s)<code>(.*?)</code>`)
+
+func sanitizeInlineCodeTags(markdown string) string {
+	return codeTagPattern.ReplaceAllStringFunc(markdown, func(match string) string {
+		inner := strings.TrimPrefix(match, "<code>")
+		inner = strings.TrimSuffix(inner, "</code>")
+		return "<code>" + escapeInlineCode(inner) + "</code>"
+	})
 }
 
 func formatBlockHTML(rt RichText) string {
@@ -658,7 +725,7 @@ func formatBlockHTML(rt RichText) string {
 		rt.PlainText = "<del>" + rt.PlainText + "</del>"
 	}
 	if rt.Annotations.Code {
-		rt.PlainText = "<code>" + rt.PlainText + "</code>"
+		rt.PlainText = "<code>" + escapeInlineCode(rt.PlainText) + "</code>"
 	}
 
 	return rt.PlainText
@@ -1061,7 +1128,7 @@ func renderTableCell(cell []TableCell) string {
 			rt.PlainText = "<del>" + rt.PlainText + "</del>"
 		}
 		if rt.Annotations.Code {
-			rt.PlainText = "<code>" + rt.PlainText + "</code>"
+			rt.PlainText = "<code>" + escapeInlineCode(rt.PlainText) + "</code>"
 		}
 
 		cellContent += rt.PlainText
@@ -1134,6 +1201,7 @@ func pageToMarkdown(token string, page NotionPage, position int) (string, error)
 
 	// Convert blocks to markdown content
 	contentMarkdown := blocksToMarkdown(token, blocks, false)
+	contentMarkdown = sanitizeInlineCodeTags(contentMarkdown)
 
 	// Format keywords for markdown
 	keywordString := "[" + keywords + "]"
