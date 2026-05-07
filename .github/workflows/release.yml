@@ -5,6 +5,9 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: write
+
 jobs:
   build:
     name: Build Binaries
@@ -80,10 +83,4 @@ jobs:
         with:
           tag: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
-          files: dist/*.zip
-
-      - name: Upload checksums
-        uses: ncipollo/release-action@v1
-        with:
-          tag: ${{ github.ref_name }}
-          files: dist/*.sha256
+          artifacts: dist/**/*.zip,dist/**/*.sha256
